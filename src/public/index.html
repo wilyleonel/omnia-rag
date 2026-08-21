@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Omnia-RAG | Dashboard</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
+
+        body {
+            margin: 0;
+            background-color: #050505;
+            overflow: hidden;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #e0e0e0;
+        }
+
+        #graph-3d {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+
+        #ui-panel {
+            position: absolute;
+            top: 24px;
+            left: 24px;
+            width: 360px;
+            background: rgba(15, 15, 20, 0.5);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 24px;
+            z-index: 10;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            transition: all 0.3s ease;
+        }
+
+        #ui-panel:hover {
+            background: rgba(20, 20, 25, 0.65);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }
+
+        .workspace-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 12px 16px;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            word-break: break-all;
+            transition: all 0.2s;
+        }
+
+        .workspace-item:hover {
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .btn-delete {
+            background: rgba(255, 60, 60, 0.1);
+            color: #ff6b6b;
+            border: 1px solid rgba(255, 60, 60, 0.2);
+            border-radius: 6px;
+            cursor: pointer;
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            transition: 0.2s;
+        }
+
+        .btn-delete:hover {
+            background: #ff6b6b;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(255, 107, 107, 0.4);
+        }
+
+        .input-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        input {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        input:focus {
+            border-color: #6366f1;
+            background: rgba(0, 0, 0, 0.5);
+        }
+
+        .btn-add, .btn-refresh {
+            background: rgba(99, 102, 241, 0.1);
+            color: #818cf8;
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 8px;
+            cursor: pointer;
+            padding: 10px 16px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            font-family: inherit;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .btn-add:hover, .btn-refresh:hover {
+            background: rgba(99, 102, 241, 0.25);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+        }
+
+        .btn-refresh {
+            width: 100%;
+            margin-top: 4px;
+        }
+
+        #loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 30;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1.5rem;
+            color: #818cf8;
+        }
+
+        #claude-banner {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15, 10, 25, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid #c084fc;
+            border-radius: 30px;
+            padding: 12px 24px;
+            color: #e9d5ff;
+            font-size: 0.95rem;
+            font-weight: 500;
+            box-shadow: 0 0 20px rgba(192, 132, 252, 0.3), inset 0 0 10px rgba(192, 132, 252, 0.15);
+            display: none;
+            z-index: 20;
+            align-items: center;
+            gap: 10px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 20px rgba(192, 132, 252, 0.3); }
+            50% { box-shadow: 0 0 35px rgba(192, 132, 252, 0.6); }
+            100% { box-shadow: 0 0 20px rgba(192, 132, 252, 0.3); }
+        }
+    </style>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/3d-force-graph"></script>
+</head>
+
+<body>
+
+    <div id="loading-overlay">Cargando Galaxia...</div>
+
+    <div id="claude-banner"></div>
+
+    <div id="ui-panel">
+        
+        <div class="input-group" style="align-items: center; margin-bottom: 5px;">
+            <select id="space-selector" onchange="changeSpace()" style="flex:1; background: rgba(0,0,0,0.5); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); padding: 10px; border-radius: 8px; outline: none; font-family: inherit; font-weight: bold; cursor: pointer;">
+                <option value="default">default</option>
+            </select>
+            <button class="btn-add" onclick="createNewSpace()">✨ Nuevo</button>
+        </div>
+        
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 0;">
+
+        <select id="ms-filter" style="width:100%;margin-bottom:10px;padding:6px;background:#111;color:#c7d2fe;border:1px solid #312e81;border-radius:6px;font-size:12px;">
+            <option value="">Todos (podado)</option>
+        </select>
+        <div id="workspaces-list">
+            <!-- Rendered dynamically -->
+        </div>
+
+        <div class="input-group">
+            <input type="text" id="ws-input" placeholder="/Ruta/Absoluta/Al/Proyecto">
+            <button class="btn-add" onclick="browseFolder()">📁 Explorar</button>
+            <button class="btn-add" onclick="addWorkspace()">+ Añadir</button>
+        </div>
+
+        <div class="input-group" style="margin-top: 5px;">
+            <input type="text" id="node-search" placeholder="Ej: DepositModal, auth.router..." onkeypress="if(event.key === 'Enter') searchNode()">
+            <button class="btn-refresh" style="width: auto; margin:0;" onclick="searchNode()">🔍 Rastrear</button>
+        </div>
+
+        <button class="btn-refresh" onclick="refreshGraph()">↻ Recargar Galaxia</button>
+        <button class="btn-refresh" style="margin-top: -5px;" onclick="syncMemory()">⚡ Sincronizar Memoria</button>
+    </div>
+
+    <div id="graph-3d"></div>
+
+    <script>
+        let Graph;
+        let hoverNode = null;
+
+        async function fetchSpaces() {
+            try {
+                const res = await fetch('/api/spaces');
+                const data = await res.json();
+                const selector = document.getElementById('space-selector');
+                selector.innerHTML = '';
+                data.spaces.forEach(sp => {
+                    const opt = document.createElement('option');
+                    opt.value = sp;
+                    opt.innerText = sp;
+                    if (sp === data.active) opt.selected = true;
+                    selector.appendChild(opt);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function changeSpace() {
+            const val = document.getElementById('space-selector').value;
+            showLoading("Viajando al Espacio: " + val);
+            try {
+                await fetch('/api/spaces/active', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: val })
+                });
+            } catch(e) {}
+            await fetchWorkspaces();
+            await refreshGraph();
+        }
+
+        async function createNewSpace() {
+            const name = prompt("Nombre del nuevo espacio (solo letras/numeros, ej: 'proyecto_b'):");
+            if (!name || name.trim() === "") return;
+            
+            showLoading("Creando Espacio...");
+            try {
+                await fetch('/api/spaces', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name.trim() })
+                });
+                await fetch('/api/spaces/active', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name.trim() })
+                });
+            } catch(e) {}
+            
+            await fetchSpaces();
+            await fetchWorkspaces();
+            await refreshGraph();
+        }
+
+        async function fetchWorkspaces() {
+            try {
+                const res = await fetch('/api/workspaces');
+                const data = await res.json();
+                const list = document.getElementById('workspaces-list');
+                list.innerHTML = '';
+
+                data.forEach(ws => {
+                    const item = document.createElement('div');
+                    item.className = 'workspace-item';
+                    item.innerHTML = `
+                        <span>${ws.path.split('/').pop() || ws.path}</span>
+                        <button class="btn-delete" onclick="deleteWorkspace('${ws.path}')">x</button>
+                    `;
+                    list.appendChild(item);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function browseFolder() {
+            try {
+                const res = await fetch('/api/select-folder');
+                const data = await res.json();
+                if (data.path) {
+                    document.getElementById('ws-input').value = data.path;
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function addWorkspace() {
+            const path = document.getElementById('ws-input').value;
+            if (!path) return;
+
+            showLoading("Indexando nuevo espacio...");
+            try {
+                const res = await fetch('/api/workspaces', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+                if (!res.ok) alert("Error al agregar");
+            } catch (e) { }
+            document.getElementById('ws-input').value = '';
+            await fetchWorkspaces();
+            await refreshGraph();
+        }
+
+        async function deleteWorkspace(path) {
+            if (!confirm(`¿Eliminar ${path} de la memoria?`)) return;
+
+            showLoading("Purgando memoria...");
+            try {
+                await fetch('/api/workspaces', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+            } catch (e) { }
+            await fetchWorkspaces();
+            await refreshGraph();
+        }
+
+        let syncInterval = null;
+
+        async function checkStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                if (data.status === "syncing") {
+                    showLoading(`Sincronizando... ${data.documents_indexed} fragmentos guardados`);
+                } else if (syncInterval) {
+                    clearInterval(syncInterval);
+                    syncInterval = null;
+                    hideLoading();
+                    refreshGraph();
+                }
+            } catch (e) { }
+        }
+
+        async function syncMemory() {
+            showLoading("Iniciando escaneo en segundo plano...");
+            try {
+                await fetch('/api/refresh', { method: 'POST' });
+            } catch (e) { }
+            
+            if (!syncInterval) {
+                syncInterval = setInterval(checkStatus, 2000);
+            }
+        }
+
+        function showLoading(text) {
+            const el = document.getElementById('loading-overlay');
+            el.innerText = text;
+            el.style.display = 'flex';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').style.display = 'none';
+        }
+        
+        function searchNode() {
+            if (!Graph) return;
+            const query = document.getElementById('node-search').value.toLowerCase().trim();
+            if (!query) return;
+
+            const { nodes } = Graph.graphData();
+            const foundNode = nodes.find(n => n.name && n.name.toLowerCase().includes(query)) || 
+                              nodes.find(n => n.id && n.id.toLowerCase().includes(query));
+
+            if (foundNode) {
+                // Focus en el nodo
+                hoverNode = foundNode;
+                Graph.linkColor(Graph.linkColor())
+                     .linkWidth(Graph.linkWidth())
+                     .linkDirectionalParticles(Graph.linkDirectionalParticles())
+                     .linkDirectionalParticleWidth(Graph.linkDirectionalParticleWidth());
+
+                // Mover cámara al nodo
+                Graph.cameraPosition(
+                    { x: foundNode.x, y: foundNode.y, z: foundNode.z + 100 }, 
+                    foundNode, 
+                    2000
+                );
+            } else {
+                alert("Nodo no encontrado en la memoria actual.");
+            }
+        }
+        
+        // Comprobar estado inicial por si acaso recarga la página
+        checkStatus();
+
+        // POLL ACTIVITY FROM CLAUDE
+        let activeNodes = new Set();
+        let activityInterval = null;
+
+        async function pollActivity() {
+            if (!Graph) return;
+            try {
+                const res = await fetch('/api/activity');
+                const data = await res.json();
+                
+                if (data && data.nodes && data.nodes.length > 0) {
+                    const prevSize = activeNodes.size;
+                    activeNodes = new Set(data.nodes);
+                    
+                    const banner = document.getElementById('claude-banner');
+                    banner.style.display = 'flex';
+                    banner.innerHTML = `✨ Claude está analizando: <b>${data.type}</b>`;
+                    
+                    if (prevSize === 0) {
+                        Graph.nodeColor(Graph.nodeColor())
+                             .linkColor(Graph.linkColor())
+                             .linkWidth(Graph.linkWidth());
+                    }
+                } else if (activeNodes.size > 0) {
+                    activeNodes.clear();
+                    document.getElementById('claude-banner').style.display = 'none';
+                    
+                    Graph.nodeColor(Graph.nodeColor())
+                         .linkColor(Graph.linkColor())
+                         .linkWidth(Graph.linkWidth());
+                }
+            } catch (e) { }
+        }
+        let ws;
+        function connectWebSocket() {
+            if (ws) ws.close();
+            ws = new WebSocket('ws://' + location.host + '/ws');
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'activity_update') {
+                        pollActivity(); 
+                    }
+                } catch(e) {}
+            };
+            ws.onclose = function() {
+                setTimeout(connectWebSocket, 5000);
+            };
+        }
+        
+        connectWebSocket();
+        let GRAPH_LIMIT = 1200;
+        let GRAPH_MS = '';
+
+        async function fetchMicroservices() {
+            try {
+                const res = await fetch('/api/microservices');
+                const data = await res.json();
+                const sel = document.getElementById('ms-filter');
+                if (!sel) return;
+                sel.innerHTML = '<option value="">Todos (podado)</option>' +
+                    data.microservices.map(m => `<option value="${m.name}">${m.name} (${m.chunks})</option>`).join('');
+                sel.onchange = () => { GRAPH_MS = sel.value; refreshGraph(); };
+            } catch (e) {}
+        }
+
+        async function refreshGraph() {
+            showLoading("Conectando Neuronas...");
+            try {
+                const params = new URLSearchParams({ limit: GRAPH_LIMIT });
+                if (GRAPH_MS) params.set('ms', GRAPH_MS);
+                const res = await fetch('/api/graph?' + params);
+                const gData = await res.json();
+                console.log(`Grafo: ${gData.nodes.length} nodos / ${gData.links.length} enlaces`);
+
+                let workspaces = [];
+                try {
+                    const wsRes = await fetch('/api/workspaces');
+                    workspaces = await wsRes.json();
+                } catch(e) {}
+
+                gData.nodes.forEach(node => {
+                    let path = node.id;
+                    let msName = "General";
+                    for (let ws of workspaces) {
+                        if (path.startsWith(ws.path)) {
+                            let relPath = path.substring(ws.path.length);
+                            if (relPath.startsWith('/')) relPath = relPath.substring(1);
+                            msName = relPath.split('/')[0];
+                            break;
+                        }
+                    }
+                    node.microservice = msName;
+                });
+
+                // Pre-asignar a algunos cables la capacidad de llevar luz ambiental
+                gData.links.forEach(link => {
+                    link.__ambientParticle = Math.random() > 0.8;
+                });
+
+                // Pre-calcular vecinos para filtrado rápido
+                const nodeNeighbors = new Map();
+                gData.links.forEach(link => {
+                    const src = link.source.id || link.source;
+                    const tgt = link.target.id || link.target;
+                    if (!nodeNeighbors.has(src)) nodeNeighbors.set(src, new Set());
+                    if (!nodeNeighbors.has(tgt)) nodeNeighbors.set(tgt, new Set());
+                    nodeNeighbors.get(src).add(tgt);
+                    nodeNeighbors.get(tgt).add(src);
+                });
+
+                if (!Graph) {
+                    Graph = ForceGraph3D()
+                        (document.getElementById('graph-3d'))
+                        .nodeLabel('name')
+                        .nodeAutoColorBy('group')
+                        .nodeResolution(8) // Baja resolución poligonal para mejor rendimiento
+                        .linkResolution(3)
+                        .backgroundColor('#000000')
+                        // OPTIMIZACIÓN EXTREMA DE FÍSICAS:
+                        // Detenemos los cálculos matemáticos rápidamente para que no queme la CPU
+                        .warmupTicks(100)
+                        .cooldownTicks(50)
+                        .nodeVisibility(node => {
+                            // Modo Enfoque: Si hay un nodo buscado, ocultar el resto de la galaxia
+                            if (hoverNode) {
+                                const isNeighbor = nodeNeighbors.has(hoverNode.id) && nodeNeighbors.get(hoverNode.id).has(node.id);
+                                return node.id === hoverNode.id || isNeighbor;
+                            }
+                            return true; // Si no hay búsqueda, mostrar todo
+                        })
+                        .linkColor(link => {
+                            if (activeNodes.size > 0) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                let sourceTouched = activeNodes.has(sid) || Array.from(activeNodes).some(a => sid.includes(a));
+                                let targetTouched = activeNodes.has(tid) || Array.from(activeNodes).some(a => tid.includes(a));
+                                if (sourceTouched && targetTouched) {
+                                    return '#c084fc';
+                                }
+                                return 'rgba(255, 255, 255, 0.02)';
+                            }
+                            
+                            if (hoverNode) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                return (sid === hoverNode.id || tid === hoverNode.id)
+                                    ? (link.type === 'structural' ? 'rgba(0, 255, 255, 0.9)' : 'rgba(200, 100, 255, 0.9)')
+                                    : 'rgba(255, 255, 255, 0.01)';
+                            }
+                            return link.type === 'structural' ? 'rgba(0, 255, 255, 0.25)' : 'rgba(200, 100, 255, 0.25)';
+                        })
+                        .linkWidth(link => {
+                            if (activeNodes.size > 0) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                let sourceTouched = activeNodes.has(sid) || Array.from(activeNodes).some(a => sid.includes(a));
+                                let targetTouched = activeNodes.has(tid) || Array.from(activeNodes).some(a => tid.includes(a));
+                                return (sourceTouched && targetTouched) ? 2 : 0.1;
+                            }
+                            if (hoverNode) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                return (sid === hoverNode.id || tid === hoverNode.id) ? 2 : 0.1;
+                            }
+                            return 0.8;
+                        })
+                        .linkDirectionalParticles(link => {
+                            if (activeNodes.size > 0) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                let sourceTouched = activeNodes.has(sid) || Array.from(activeNodes).some(a => sid.includes(a));
+                                let targetTouched = activeNodes.has(tid) || Array.from(activeNodes).some(a => tid.includes(a));
+                                return (sourceTouched && targetTouched) ? 4 : 0;
+                            }
+                            if (hoverNode) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                return (sid === hoverNode.id || tid === hoverNode.id) ? 4 : 0;
+                            }
+                            return link.__ambientParticle ? 1 : 0;
+                        })
+                        .linkDirectionalParticleWidth(link => {
+                            if (activeNodes.size > 0) return 3.5;
+                            if (hoverNode) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                return (sid === hoverNode.id || tid === hoverNode.id) ? 3.5 : 0;
+                            }
+                            return 2.5;
+                        })
+                        .linkDirectionalParticleSpeed(link => {
+                            if (activeNodes.size > 0) return 0.02;
+                            if (hoverNode) {
+                                let sid = link.source.id || link.source;
+                                let tid = link.target.id || link.target;
+                                return (sid === hoverNode.id || tid === hoverNode.id) ? 0.015 : 0;
+                            }
+                            return 0.006;
+                        })
+                        .onNodeHover(node => {
+                            document.getElementById('graph-3d').style.cursor = node ? 'pointer' : null;
+                            hoverNode = node || null;
+                            Graph.nodeColor(Graph.nodeColor())
+                                .linkColor(Graph.linkColor())
+                                .linkWidth(Graph.linkWidth())
+                                .linkDirectionalParticles(Graph.linkDirectionalParticles())
+                                .linkDirectionalParticleWidth(Graph.linkDirectionalParticleWidth());
+                        });
+
+                    Graph.scene().fog = new THREE.FogExp2('#000000', 0.0004);
+                }
+
+                Graph.graphData(gData);
+                // Encuadrar: sin esto la camara puede quedar fuera de la nube de nodos
+                setTimeout(() => { try { Graph.zoomToFit(800, 120); } catch (e) {} }, 900);
+            } catch (e) { console.error("Graph Error:", e); }
+            hideLoading();
+        }
+
+        // Init
+        fetchSpaces();
+        fetchWorkspaces();
+        fetchMicroservices();
+        refreshGraph();
+
+    </script>
+</body>
+
+</html>

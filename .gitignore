@@ -1,0 +1,25 @@
+# Datos de runtime (ChromaDB, SQLite, memoria episódica) — no se versionan
+data/
+
+# Dependencias
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Grafo de sistema generado por graphify (se regenera en cada análisis)
+system-graph/
+
+# src/graphify es un repo git independiente (graphify-toolkit, con su propio
+# remote en GitHub) vendorizado dentro del proyecto. No se trackea como
+# gitlink suelto (quedaría roto sin .gitmodules); si se quiere versionarlo
+# junto con este repo, agregarlo explícitamente como submódulo:
+#   git submodule add https://github.com/FvdHMBAI/graphify-toolkit.git src/graphify
+src/graphify/
+
+# Logs y artefactos de sesiones de trabajo
+server.log
+espacio_vectorial.html
+
+# NOTA: los .bak/.bak2 se mantienen intencionalmente versionados
+# (decisión explícita del usuario al ejecutar el plan de mejora).

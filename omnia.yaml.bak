@@ -1,0 +1,24 @@
+active_space: default
+spaces:
+  default:
+    directories:
+    - exclude:
+      - node_modules
+      - dist
+      - build
+      - .git
+      - .claude
+      - venv
+      - __pycache__
+      - .next
+      - charting_library
+      - vendor
+      - public
+      extensions:
+      - .ts
+      - .tsx
+      - .md
+      - .json
+      - .js
+      - .py
+      path: /Users/leo/Desktop/copia de seguridad/wb test/

@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+import sys
+import json
+import urllib.request
+import urllib.parse
+
+def get_context(query, max_results=3):
+    url = f"http://127.0.0.1:8000/buscar?q={urllib.parse.quote(query)}&n={max_results}"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=3.0) as response:
+            data = json.loads(response.read().decode())
+            
+            if not data.get("results"):
+                return ""
+            
+            context = "\n--- CONTEXTO OMNIA-RAG ---\n"
+            for result in data["results"]:
+                meta = result.get("meta") or {}
+                source = meta.get("source") or result.get("id", "Unknown")
+                context += f"\nFile: {source}\n{result.get('text', '')}\n"
+            context += "\n--- FIN CONTEXTO ---\n"
+            
+            return context
+    except Exception:
+        return ""
+
+def main():
+    if len(sys.argv) < 2:
+        return
+        
+    event_name = sys.argv[1]
+    
+    if event_name == "UserPromptSubmit":
+        input_data = sys.stdin.read()
+        try:
+            event = json.loads(input_data)
+            user_prompt = event.get("prompt", "")
+            
+            if not user_prompt:
+                print(json.dumps(event))
+                return
+                
+            # Obtener contexto local del servidor Omnia
+            context = get_context(user_prompt)
+            
+            # Inyectarlo de manera invisible
+            event["prompt"] = f"{user_prompt}\n\n{context}"
+            print(json.dumps(event))
+            
+        except Exception:
+            print(input_data)
+    else:
+        print(sys.stdin.read())
+
+if __name__ == "__main__":
+    main()

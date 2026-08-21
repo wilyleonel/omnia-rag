@@ -1,0 +1,449 @@
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+
+import sys
+import yaml
+import threading
+import time
+import uvicorn
+import asyncio
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from indexer import OmniaIndexer, start_watchdog
+
+from dashboard import Dashboard
+from rich.live import Live
+
+app = FastAPI(title="Omnia-RAG Backend")
+
+# Instancias Globales
+indexer = None
+dashboard = Dashboard()
+watchdog_observer = None
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+CONFIG_FILE = os.path.join(BASE_DIR, "omnia.yaml")
+PUBLIC_DIR = os.path.join(BASE_DIR, "src", "public")
+
+if not os.path.exists(PUBLIC_DIR):
+    os.makedirs(PUBLIC_DIR)
+
+app.mount("/public", StaticFiles(directory=PUBLIC_DIR), name="public")
+
+class Workspace(BaseModel):
+    path: str
+
+class SpaceUpdate(BaseModel):
+    name: str
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global watchdog_observer
+    if watchdog_observer:
+        watchdog_observer.stop()
+        watchdog_observer.join()
+
+@app.get("/")
+def read_root():
+    # If index.html exists, serve it. Otherwise return a basic message.
+    idx_path = os.path.join(PUBLIC_DIR, "index.html")
+    if os.path.exists(idx_path):
+        return FileResponse(idx_path)
+    return {"message": "index.html not found in public directory."}
+
+@app.get("/api/graph")
+def get_graph():
+    from visualizer import generate_graph_data
+    if not indexer or not hasattr(indexer, 'collection'):
+        return {"nodes": [], "links": []}
+    return generate_graph_data(indexer.collection)
+
+@app.get("/api/spaces")
+def get_spaces():
+    config = indexer.config
+    spaces = list(config.get("spaces", {}).keys())
+    return {"active": indexer.active_space, "spaces": spaces}
+
+@app.post("/api/spaces")
+def create_space(space: SpaceUpdate):
+    with open(CONFIG_FILE, 'r') as f:
+        config = yaml.safe_load(f) or {}
+    
+    if "spaces" not in config:
+        config["spaces"] = {}
+        
+    if space.name in config["spaces"]:
+        raise HTTPException(status_code=400, detail="Space already exists")
+        
+    config["spaces"][space.name] = {"directories": []}
+    
+    with open(CONFIG_FILE, 'w') as f:
+        yaml.dump(config, f)
+        
+    indexer.reload_config()
+    return {"message": "Space created"}
+
+@app.put("/api/spaces/active")
+def set_active_space(space: SpaceUpdate):
+    with open(CONFIG_FILE, 'r') as f:
+        config = yaml.safe_load(f) or {}
+        
+    if space.name not in config.get("spaces", {}):
+        raise HTTPException(status_code=404, detail="Space not found")
+        
+    config["active_space"] = space.name
+    
+    with open(CONFIG_FILE, 'w') as f:
+        yaml.dump(config, f)
+        
+    indexer.reload_config()
+    indexer.set_active_space(space.name)
+    
+    global watchdog_observer
+    if watchdog_observer:
+        watchdog_observer.stop()
+        watchdog_observer.join()
+    watchdog_observer = start_watchdog(indexer)
+    
+    return {"message": f"Active space changed to {space.name}"}
+
+@app.get("/api/workspaces")
+def get_workspaces():
+    return indexer.get_directories()
+
+@app.get("/api/select-folder")
+async def select_folder():
+    import subprocess
+    script = 'POSIX path of (choose folder with prompt "Selecciona la carpeta del proyecto para añadir a Omnia-RAG")'
+    try:
+        result = await asyncio.to_thread(subprocess.run, ["osascript", "-e", script], capture_output=True, text=True)
+        if result.returncode == 0:
+            return {"path": result.stdout.strip()}
+    except Exception as e:
+        pass
+        
+    return {"path": ""}
+
+@app.post("/api/workspaces")
+async def add_workspace(ws: Workspace):
+    global watchdog_observer
+    
+    with open(CONFIG_FILE, 'r') as f:
+        config = yaml.safe_load(f) or {}
+        
+    active = indexer.active_space
+    if "spaces" not in config:
+        config["spaces"] = {active: {"directories": []}}
+    if active not in config["spaces"]:
+        config["spaces"][active] = {"directories": []}
+        
+    directories = config["spaces"][active].get("directories", [])
+        
+    if any(d["path"] == ws.path for d in directories):
+        raise HTTPException(status_code=400, detail="Workspace already exists")
+        
+    directories.append({
+        "path": ws.path,
+        "extensions": [".ts", ".tsx", ".md", ".json", ".js", ".py"],
+        "exclude": ["node_modules", "dist", "build", ".git", ".claude", "venv", "__pycache__", ".next"]
+    })
+    
+    config["spaces"][active]["directories"] = directories
+    
+    with open(CONFIG_FILE, 'w') as f:
+        yaml.dump(config, f)
+        
+    indexer.reload_config()
+    docs, chunks = indexer.scan_all()
+    dashboard.update_stats(documents=docs, chunks=chunks)
+    
+    if watchdog_observer:
+        watchdog_observer.stop()
+        watchdog_observer.join()
+    watchdog_observer = start_watchdog(indexer)
+    
+    return {"message": "Workspace added successfully", "directories": indexer.get_directories()}
+
+@app.delete("/api/workspaces")
+async def delete_workspace(ws: Workspace):
+    global watchdog_observer
+    
+    with open(CONFIG_FILE, 'r') as f:
+        config = yaml.safe_load(f) or {}
+        
+    active = indexer.active_space
+    directories = config.get("spaces", {}).get(active, {}).get("directories", [])
+        
+    original_len = len(directories)
+    directories = [d for d in directories if d["path"] != ws.path]
+    
+    if len(directories) == original_len:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+        
+    config["spaces"][active]["directories"] = directories
+    
+    with open(CONFIG_FILE, 'w') as f:
+        yaml.dump(config, f)
+        
+    full_path = os.path.abspath(os.path.join(BASE_DIR, ws.path))
+    indexer.purge_directory(full_path)
+    
+    indexer.reload_config()
+    
+    if watchdog_observer:
+        watchdog_observer.stop()
+        watchdog_observer.join()
+    watchdog_observer = start_watchdog(indexer)
+    
+    return {"message": "Workspace deleted successfully", "directories": indexer.get_directories()}
+
+@app.get("/api/graphify/impact")
+async def graphify_impact(file: str):
+    import subprocess
+    graphify_query = os.path.join(BASE_DIR, "src", "graphify", "core", "graphify-query.sh")
+    system_graph = os.path.join(BASE_DIR, "system-graph", indexer.active_space, "graph.json")
+    env = os.environ.copy()
+    env["GRAPHIFY_GRAPH"] = system_graph
+    
+    try:
+        result = await asyncio.to_thread(subprocess.run, [graphify_query, "impact", file], env=env, capture_output=True, text=True)
+        await manager.broadcast({"type": "activity_update"})
+        return {"output": result.stdout if result.stdout else result.stderr}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/graphify/path")
+async def graphify_path(source: str, target: str):
+    import subprocess
+    graphify_query = os.path.join(BASE_DIR, "src", "graphify", "core", "graphify-query.sh")
+    system_graph = os.path.join(BASE_DIR, "system-graph", indexer.active_space, "graph.json")
+    env = os.environ.copy()
+    env["GRAPHIFY_GRAPH"] = system_graph
+    
+    try:
+        result = await asyncio.to_thread(subprocess.run, [graphify_query, "path", source, target], env=env, capture_output=True, text=True)
+        await manager.broadcast({"type": "activity_update"})
+        return {"output": result.stdout if result.stdout else result.stderr}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/graphify/god_nodes")
+async def graphify_god_nodes():
+    import subprocess
+    graphify_query = os.path.join(BASE_DIR, "src", "graphify", "core", "graphify-query.sh")
+    system_graph = os.path.join(BASE_DIR, "system-graph", indexer.active_space, "graph.json")
+    env = os.environ.copy()
+    env["GRAPHIFY_GRAPH"] = system_graph
+    
+    try:
+        result = await asyncio.to_thread(subprocess.run, [graphify_query, "god-nodes"], env=env, capture_output=True, text=True)
+        await manager.broadcast({"type": "activity_update"})
+        return {"output": result.stdout if result.stdout else result.stderr}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/activity")
+def get_activity():
+    activity_file = os.path.join(BASE_DIR, "system-graph", indexer.active_space, "activity.json")
+    if not os.path.exists(activity_file):
+        return {"type": None, "nodes": []}
+    
+    # Check if the file is older than 10 seconds
+    mtime = os.path.getmtime(activity_file)
+    if time.time() - mtime > 10:
+        return {"type": None, "nodes": []}
+        
+    try:
+        with open(activity_file, "r") as f:
+            data = json.load(f)
+            return data
+    except Exception:
+        return {"type": None, "nodes": []}
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+
+is_syncing = False
+current_indexed_chunks = 0
+
+def on_indexer_update(documents, chunks):
+    global current_indexed_chunks
+    current_indexed_chunks = chunks
+
+# Re-initialize indexer with the callback
+indexer = OmniaIndexer(update_callback=on_indexer_update)
+
+@app.post("/api/refresh")
+async def refresh_all(background_tasks: BackgroundTasks):
+    global is_syncing, current_indexed_chunks
+    if is_syncing:
+        return {"message": "Ya hay una sincronización en curso"}
+        
+    def run_sync():
+        global is_syncing, current_indexed_chunks
+        try:
+            is_syncing = True
+            current_indexed_chunks = 0
+            docs, chunks = indexer.scan_all()
+            dashboard.update_stats(documents=docs, chunks=chunks)
+            current_indexed_chunks = chunks
+        finally:
+            is_syncing = False
+
+    background_tasks.add_task(run_sync)
+    return {"message": "Sincronización iniciada en segundo plano"}
+
+@app.get("/api/status")
+def get_status():
+    if not indexer:
+        return {"status": "offline"}
+    
+    if is_syncing:
+        return {"status": "syncing", "documents_indexed": current_indexed_chunks}
+    else:
+        try:
+            docs = indexer.collection.count()
+        except:
+            docs = current_indexed_chunks
+        return {"status": "idle", "documents_indexed": docs}
+
+@app.get("/buscar")
+async def buscar(q: str, n: int = 5):
+    if not indexer or not indexer.collection.count():
+        return {"results": []}
+        
+    # 1. Búsqueda Semántica (ChromaDB)
+    vector_results = indexer.collection.query(
+        query_texts=[q],
+        n_results=n * 2
+    )
+    
+    # 2. Búsqueda Exacta (SQLite FTS5)
+    fts_results = []
+    try:
+        # FTS5 match query requires specific syntax, replace spaces with OR/AND or just use raw query
+        # Let's use simple phrase match or OR
+        fts_query = " OR ".join(f'"{word}"' for word in q.split() if len(word) > 2)
+        if not fts_query:
+            fts_query = f'"{q}"'
+            
+        cursor = indexer.conn.cursor()
+        table = f"omnia_search_{indexer.safe_space}"
+        cursor.execute(f'''
+            SELECT id, source, symbol, content
+            FROM {table}
+            WHERE {table} MATCH ?
+            ORDER BY rank
+            LIMIT ?
+        ''', (fts_query, n * 2))
+        fts_results = cursor.fetchall()
+    except Exception as e:
+        print(f"FTS5 Error: {e}")
+        pass
+        
+    # 3. Reciprocal Rank Fusion (RRF)
+    k = 60
+    scores = {}
+    docs_metadata = {}
+    
+    # RRF for Vector
+    if vector_results["ids"] and vector_results["ids"][0]:
+        for rank, doc_id in enumerate(vector_results["ids"][0]):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+            docs_metadata[doc_id] = {
+                "text": vector_results["documents"][0][rank],
+                "meta": vector_results["metadatas"][0][rank],
+                "source": "vector"
+            }
+            
+    # RRF for FTS5
+    for rank, row in enumerate(fts_results):
+        doc_id, source, symbol, content = row
+        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+        if doc_id not in docs_metadata:
+            docs_metadata[doc_id] = {
+                "text": content,
+                "meta": {"source": source, "symbol": symbol, "type": "fts"},
+                "source": "exact"
+            }
+            
+    # Ordenar por RRF Score
+    ranked_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    
+    final_results = []
+    for doc_id, score in ranked_docs[:n]:
+        doc_info = docs_metadata[doc_id]
+        final_results.append({
+            "id": doc_id,
+            "text": doc_info["text"],
+            "metadata": doc_info["meta"],
+            "score": round(score, 4),
+            "match_type": doc_info["source"]
+        })
+
+    # Log semantic search activity
+    activity_file = os.path.join(BASE_DIR, "system-graph", indexer.active_space, "activity.json")
+    try:
+        os.makedirs(os.path.dirname(activity_file), exist_ok=True)
+        with open(activity_file, "w") as f:
+            import json
+            nodes = [r["id"] for r in final_results]
+            json.dump({"type": "semantic-search", "nodes": nodes}, f)
+    except Exception as e:
+        print(f"Error logging activity: {e}")
+
+    await manager.broadcast({"type": "activity_update"})
+
+    current_queries = dashboard.stats["queries_today"] + 1
+    current_tokens = dashboard.stats["tokens_avoided"] + sum(len(r["text"])//4 for r in final_results)
+    dashboard.update_stats(queries_today=current_queries, tokens_avoided=current_tokens)
+    
+    return {"results": final_results}
+
+if __name__ == "__main__":
+    print("Iniciando Omnia-RAG Backend en http://localhost:8000 ...")
+    
+    # Inicialización síncrona en el hilo principal antes de arrancar FastAPI
+    # NO escaneamos todo aquí para no bloquear el arranque
+    indexer = OmniaIndexer(update_callback=on_indexer_update)
+    
+    # Cargar los contadores del estado actual
+    docs = indexer.collection.count()
+    dashboard.update_stats(documents=docs, chunks=docs)
+    
+    # Arrancamos uvicorn pasando la app directamente para no recargar el módulo
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info", access_log=False)
