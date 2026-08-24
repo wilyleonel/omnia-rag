@@ -14,6 +14,7 @@ Fórmula de decaimiento:
 
 import sqlite3
 import math
+import threading
 import time
 import uuid
 import os
@@ -29,6 +30,12 @@ PRUNE_THRESHOLD = 0.05
 
 # Días de inactividad para que una sesión se elimine automáticamente
 SESSION_DECAY_DAYS = 30
+
+# Techo de use_count: sin esto, un recuerdo reforzado cientos de veces puede
+# dominar el ranking indefinidamente incluso con decay agresivo (importance *
+# use_count crece sin límite). Con el resto de parámetros por defecto, este
+# techo es holgado para el uso normal y solo frena el caso patológico.
+USE_COUNT_CAP = 50
 
 MEMORY_TYPES = {"rule", "pattern", "insight", "decision", "context"}
 
@@ -49,6 +56,11 @@ class MemoryStore:
         self.chroma_client = chroma_client
         self.embedding_function = embedding_function
         self.collection = None
+        # Serializa el ciclo dedup-check + insert de add(): sin este lock, dos
+        # add() concurrentes con contenido casi idéntico pueden pasar ambos
+        # _find_duplicate() (TOCTOU) antes de que el primero termine de
+        # insertar, y terminan creando dos recuerdos casi-duplicados.
+        self._add_lock = threading.Lock()
         if self.chroma_client and self.embedding_function:
             try:
                 self.collection = self.chroma_client.get_or_create_collection(
@@ -99,18 +111,24 @@ class MemoryStore:
                     created_at  REAL NOT NULL,
                     last_used   REAL NOT NULL,
                     score       REAL NOT NULL DEFAULT 1.0,
-                    session     TEXT NOT NULL DEFAULT 'global'
+                    session     TEXT NOT NULL DEFAULT 'global',
+                    space       TEXT NOT NULL DEFAULT 'default'
                 )
             """)
-            # Migración: agregar columna session si ya existe la tabla sin ella
+            # Migración: agregar columnas si ya existe la tabla sin ellas
             try:
                 conn.execute("ALTER TABLE memories ADD COLUMN session TEXT NOT NULL DEFAULT 'global'")
+            except Exception:
+                pass  # Ya existe
+            try:
+                conn.execute("ALTER TABLE memories ADD COLUMN space TEXT NOT NULL DEFAULT 'default'")
             except Exception:
                 pass  # Ya existe
 
             conn.execute("CREATE INDEX IF NOT EXISTS idx_score   ON memories(score DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_type    ON memories(type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON memories(session)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_space   ON memories(space)")
 
     # ─────────────────────── Score & Decay ─────────────────────────────── #
 
@@ -194,16 +212,16 @@ class MemoryStore:
 
     # ──────────────────────────── CRUD ─────────────────────────────────── #
 
-    def _find_duplicate(self, content: str, type: str, session: str) -> Optional[str]:
-        """Busca un recuerdo semánticamente casi-idéntico en la misma sesión/tipo,
-        para evitar acumular duplicados con cada `add()`."""
+    def _find_duplicate(self, content: str, type: str, session: str, space: str) -> Optional[str]:
+        """Busca un recuerdo semánticamente casi-idéntico en el mismo
+        space/sesión/tipo, para evitar acumular duplicados con cada `add()`."""
         if self.collection is None:
             return None
         try:
             results = self.collection.query(
                 query_texts=[content],
                 n_results=1,
-                where={"$and": [{"type": type}, {"session": session}]},
+                where={"$and": [{"type": type}, {"session": session}, {"space": space}]},
             )
             ids = results.get("ids", [[]])[0]
             distances = results.get("distances", [[]])[0]
@@ -220,60 +238,70 @@ class MemoryStore:
         tags: Optional[List[str]] = None,
         importance: float = 1.0,
         session: str = "global",
+        space: str = "default",
     ) -> dict:
-        """Guarda un nuevo recuerdo en la sesión indicada. Si ya existe uno casi
-        idéntico (mismo tipo/sesión), refuerza ese en vez de duplicarlo."""
+        """Guarda un nuevo recuerdo en la sesión/space indicados. Si ya existe uno
+        casi idéntico (mismo tipo/sesión/space), refuerza ese en vez de duplicarlo."""
         if type not in MEMORY_TYPES:
             raise ValueError(f"Tipo inválido. Usa: {MEMORY_TYPES}")
 
         content = content.strip()
-        duplicate_id = self._find_duplicate(content, type, session)
-        if duplicate_id:
-            return self.boost(duplicate_id, extra_importance=0.1) or self.get(duplicate_id)
 
-        now = time.time()
-        memory_id = uuid.uuid4().hex
-        tags_str = ",".join(tags or [])
+        with self._add_lock:
+            duplicate_id = self._find_duplicate(content, type, session, space)
+            if duplicate_id:
+                return self.boost(duplicate_id, extra_importance=0.1) or self.get(duplicate_id)
 
-        with self._conn() as conn:
-            # Asegurar que la sesión existe; si no, crearla
-            conn.execute(
-                "INSERT OR IGNORE INTO sessions (name, description, created_at, last_used) VALUES (?,?,?,?)",
-                (session, "", now, now),
-            )
-            # Actualizar last_used de la sesión
-            conn.execute("UPDATE sessions SET last_used=? WHERE name=?", (now, session))
+            now = time.time()
+            memory_id = uuid.uuid4().hex
+            tags_str = ",".join(tags or [])
 
-            conn.execute(
-                """INSERT INTO memories (id, content, type, tags, importance, use_count, created_at, last_used, score, session)
-                   VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
-                (memory_id, content, type, tags_str, importance, now, now, importance, session),
-            )
-
-        if self.collection is not None:
-            try:
-                self.collection.add(
-                    documents=[content],
-                    metadatas=[{"type": type, "session": session}],
-                    ids=[memory_id]
+            with self._conn() as conn:
+                # Asegurar que la sesión existe; si no, crearla
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions (name, description, created_at, last_used) VALUES (?,?,?,?)",
+                    (session, "", now, now),
                 )
-            except Exception as e:
-                import logging
-                logging.error(f"Error indexing memory to ChromaDB: {e}")
-                # Revertir el insert en SQLite para no dejar un recuerdo invisible
-                # para recall() (que depende del índice vectorial salvo fallback).
-                with self._conn() as conn:
-                    conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
-                raise RuntimeError(f"No se pudo indexar el recuerdo en ChromaDB, operación revertida: {e}") from e
+                # Actualizar last_used de la sesión
+                conn.execute("UPDATE sessions SET last_used=? WHERE name=?", (now, session))
 
-        return self.get(memory_id)
+                conn.execute(
+                    """INSERT INTO memories (id, content, type, tags, importance, use_count, created_at, last_used, score, session, space)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)""",
+                    (memory_id, content, type, tags_str, importance, now, now, importance, session, space),
+                )
+
+            if self.collection is not None:
+                try:
+                    self.collection.add(
+                        documents=[content],
+                        metadatas=[{"type": type, "session": session, "space": space}],
+                        ids=[memory_id]
+                    )
+                except Exception as e:
+                    import logging
+                    logging.error(f"Error indexing memory to ChromaDB: {e}")
+                    # Revertir el insert en SQLite para no dejar un recuerdo invisible
+                    # para recall() (que depende del índice vectorial salvo fallback).
+                    with self._conn() as conn:
+                        conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+                    raise RuntimeError(f"No se pudo indexar el recuerdo en ChromaDB, operación revertida: {e}") from e
+
+            return self.get(memory_id)
 
     def get(self, memory_id: str) -> Optional[dict]:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
-            return self._row_to_dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            # Recalcular en vivo, igual que list_all()/recall(): la columna
+            # score persistida solo se actualiza en add/boost/recall y decae
+            # con el tiempo, así que devolver el valor crudo la deja stale.
+            d["score"] = self._compute_score(d["importance"], d["use_count"], d["last_used"])
+            return self._row_to_dict(d)
 
-    def list_all(self, limit: int = 50, type_filter: Optional[str] = None, session: Optional[str] = None) -> List[dict]:
+    def list_all(self, limit: int = 50, type_filter: Optional[str] = None, session: Optional[str] = None, space: Optional[str] = None) -> List[dict]:
         with self._conn() as conn:
             conditions = []
             params: list = []
@@ -283,6 +311,9 @@ class MemoryStore:
             if session:
                 conditions.append("session=?")
                 params.append(session)
+            if space:
+                conditions.append("space=?")
+                params.append(space)
             where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
             rows = conn.execute(f"SELECT * FROM memories {where}", params).fetchall()
             
@@ -295,14 +326,16 @@ class MemoryStore:
         scored_rows.sort(key=lambda x: x["score"], reverse=True)
         return [self._row_to_dict(r) for r in scored_rows[:limit]]
 
-    def recall(self, query: str, top_k: int = 5, type_filter: Optional[str] = None, session: Optional[str] = None) -> List[dict]:
+    def recall(self, query: str, top_k: int = 5, type_filter: Optional[str] = None, session: Optional[str] = None, space: Optional[str] = None) -> List[dict]:
         """
         Busca recuerdos relevantes para `query`.
         session=None  → busca en TODAS las sesiones (contexto unificado)
         session="crm" → busca solo en esa sesión
+        space=None    → busca en TODOS los spaces
+        space="miapp" → busca solo en ese space (workspace activo)
         """
         top_rows = []
-        
+
         if self.collection is not None:
             try:
                 where = {}
@@ -310,7 +343,9 @@ class MemoryStore:
                     where["type"] = type_filter
                 if session:
                     where["session"] = session
-                
+                if space:
+                    where["space"] = space
+
                 query_args = {"query_texts": [query], "n_results": top_k * 3}
                 if where:
                     query_args["where"] = where if len(where) == 1 else {"$and": [{k: v} for k, v in where.items()]}
@@ -354,9 +389,12 @@ class MemoryStore:
                 if session:
                     conditions.append("session=?")
                     params.append(session)
+                if space:
+                    conditions.append("space=?")
+                    params.append(space)
                 where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
                 db_rows = conn.execute(f"SELECT * FROM memories {where}", params).fetchall()
-                
+
             query_words = set(query.lower().split())
             scored = []
             for r in db_rows:
@@ -379,7 +417,7 @@ class MemoryStore:
         now = time.time()
         with self._conn() as conn:
             for row in top_rows:
-                new_use = row["use_count"] + 1
+                new_use = min(row["use_count"] + 1, USE_COUNT_CAP)
                 new_score = self._compute_score(row["importance"], new_use, now)
                 conn.execute(
                     "UPDATE memories SET use_count=?, last_used=?, score=? WHERE id=?",

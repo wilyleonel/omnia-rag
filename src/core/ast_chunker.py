@@ -39,6 +39,57 @@ QUERIES = {
 QUERIES[".jsx"] = QUERIES[".js"]
 QUERIES[".tsx"] = QUERIES[".ts"]
 
+# Cap para evitar chunks gigantes (ej. una función/clase de miles de líneas)
+# que exceden el límite de tokens del modelo de embeddings y terminan
+# truncados en silencio por Chroma. chunk_text() en indexer.py ya aplica un
+# cap análogo (chunk_size=1000) para el fallback de texto plano.
+MAX_CHUNK_CHARS = 4000
+CHUNK_OVERLAP_CHARS = 200
+
+
+def _split_oversized_chunk(chunk):
+    """Si chunk["text"] excede MAX_CHUNK_CHARS, lo parte en varios chunks por
+    líneas (con solape), conservando el resto de metadata original."""
+    text = chunk["text"]
+    if len(text) <= MAX_CHUNK_CHARS:
+        return [chunk]
+
+    lines = text.split("\n")
+    parts = []
+    current_lines = []
+    current_len = 0
+    for line in lines:
+        current_lines.append(line)
+        current_len += len(line) + 1
+        if current_len >= MAX_CHUNK_CHARS:
+            parts.append(current_lines)
+            overlap_lines = []
+            overlap_len = 0
+            for l in reversed(current_lines):
+                overlap_len += len(l) + 1
+                overlap_lines.insert(0, l)
+                if overlap_len >= CHUNK_OVERLAP_CHARS:
+                    break
+            current_lines = overlap_lines
+            current_len = overlap_len
+    if current_lines:
+        parts.append(current_lines)
+
+    start_line = chunk["start_line"]
+    result = []
+    line_offset = 0
+    for idx, part_lines in enumerate(parts):
+        result.append({
+            **chunk,
+            "text": "\n".join(part_lines),
+            "symbol": f'{chunk["symbol"]}#p{idx + 1}',
+            "start_line": start_line + line_offset,
+            "end_line": start_line + line_offset + len(part_lines) - 1,
+        })
+        line_offset += len(part_lines)
+    return result
+
+
 class ASTChunker:
     def __init__(self):
         self.parsers = {}
@@ -131,7 +182,7 @@ class ASTChunker:
                         else:
                             summary += "No realiza llamadas a otras funciones."
 
-                        chunks.append({
+                        chunks.extend(_split_oversized_chunk({
                             "text": chunk_text,
                             "symbol": symbol_name,
                             "type": def_node.type,
@@ -140,7 +191,7 @@ class ASTChunker:
                             "belongs_to": belongs_to,
                             "calls": calls,
                             "summary": summary
-                        })
+                        }))
             
             return chunks
         except Exception as e:

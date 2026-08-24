@@ -8,6 +8,7 @@ import urllib.parse
 MAX_RESULTS = 5
 MIN_SCORE = 0.012
 MIN_WORDS = 4
+MAX_MEMORIES = 3
 
 # Si el prompt no menciona nada del dominio ni parece codigo, el RAG solo aporta ruido.
 TECH_HINT = re.compile(
@@ -71,6 +72,38 @@ def get_context(query):
     return "\n".join(lines)
 
 
+def get_memories(query):
+    """Trae recuerdos episódicos (rules/decisions/insights guardados con /memory)
+    relevantes al prompt. Antes solo /buscar (índice de código) llegaba al
+    contexto de Claude; la memoria quedaba escrita pero nunca se leía sola."""
+    url = "http://127.0.0.1:8000/memory/recall?q={}&top_k={}".format(
+        urllib.parse.quote(query), MAX_MEMORIES
+    )
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=3.0) as response:
+            data = json.loads(response.read().decode())
+    except Exception:
+        return ""
+
+    # recall() ya filtra por PRUNE_THRESHOLD y ordena server-side, no hace
+    # falta un umbral de score adicional acá (la escala de score de memoria
+    # no es comparable con MIN_SCORE, que está calibrado para RRF de /buscar).
+    results = data.get("results", [])
+    if not results:
+        return ""
+
+    lines = [
+        "\n--- MEMORIA OMNIA (recuerdos guardados en sesiones previas) ---",
+        "Contexto guardado por vos u otra sesion anterior. NO es evidencia del codigo actual.",
+        "",
+    ]
+    for m in results:
+        mtype = m.get("type", "insight")
+        lines.append("[{}] {}".format(mtype, m.get("content", "")))
+    lines.append("--- FIN MEMORIA ---\n")
+    return "\n".join(lines)
+
+
 def main():
     if len(sys.argv) < 2:
         return
@@ -85,9 +118,9 @@ def main():
         user_prompt = event.get("prompt", "")
 
         if user_prompt and should_search(user_prompt):
-            context = get_context(user_prompt)
-            if context:
-                event["prompt"] = "{}\n\n{}".format(user_prompt, context)
+            extra = get_context(user_prompt) + get_memories(user_prompt)
+            if extra:
+                event["prompt"] = "{}\n\n{}".format(user_prompt, extra)
 
         print(json.dumps(event))
     except Exception:

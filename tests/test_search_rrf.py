@@ -1,3 +1,5 @@
+import threading
+
 from search import hybrid_search, RRF_K
 
 
@@ -41,6 +43,7 @@ class FakeIndexer:
         self.collection = FakeCollection(vector_ids, vector_docs, vector_metas)
         self.conn = FakeConn(fts_rows)
         self.safe_space = "default"
+        self.db_lock = threading.Lock()
 
 
 def test_hybrid_search_merges_vector_and_fts_results():

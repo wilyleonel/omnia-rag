@@ -154,6 +154,6 @@ def generate_graph_data(collection=None, limit=1200, microservice=None):
     return {"nodes": nodes, "links": links}
 
 if __name__ == "__main__":
-    data = get_graph_data()
+    data = generate_graph_data()
     if data:
         print(f"Grafo generado con {len(data['nodes'])} nodos y {len(data['links'])} conexiones.")

@@ -8,7 +8,7 @@ import threading
 import time
 import uvicorn
 import asyncio
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, BackgroundTasks
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -18,7 +18,7 @@ import logging
 from typing import Optional, List
 from pydantic import BaseModel
 from memory import MemoryStore
-from indexer import OmniaIndexer, start_watchdog, make_chroma_client, load_config as load_indexer_config
+from indexer import OmniaIndexer, start_watchdog, make_chroma_client, load_config as load_indexer_config, EMBEDDING_MODEL_NAME
 from search import hybrid_search, MIN_RESULT_SCORE
 from chromadb.utils import embedding_functions
 
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
     # (make_chroma_client respeta un bloque opcional `chroma: {mode: http, ...}`
     # en omnia.yaml; por defecto usa el PersistentClient embebido de siempre)
     app.state.chroma_client = make_chroma_client(load_indexer_config())
-    app.state.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+    app.state.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL_NAME)
 
     app.state.indexer = OmniaIndexer(
         update_callback=on_indexer_update,
@@ -324,6 +324,20 @@ async def select_folder():
 @app.post("/api/workspaces")
 async def add_workspace(request: Request, ws: Workspace):
 
+    # Mismo guard que /api/refresh: sin esto, un add_workspace concurrente
+    # con un refresh_all (o con otro add_workspace) dispara dos scan_all()
+    # en paralelo, ambos escribiendo sobre el mismo Chroma/SQLite.
+    if request.app.state.is_syncing:
+        raise HTTPException(status_code=409, detail="Ya hay una sincronización en curso")
+
+    # Sanity check mínimo: sin esto, cualquier string llega a omnia.yaml y
+    # recién se descubre que el path no sirve cuando scan_all() no indexa
+    # nada. No es un allowlist de raíces permitidas (este es un tool local
+    # de un solo usuario), solo evita guardar basura.
+    full_path = os.path.abspath(os.path.join(BASE_DIR, ws.path))
+    if not os.path.isdir(full_path):
+        raise HTTPException(status_code=400, detail=f"El path no existe o no es un directorio: {full_path}")
+
     config = read_config()
 
     active = request.app.state.indexer.active_space
@@ -348,13 +362,18 @@ async def add_workspace(request: Request, ws: Workspace):
     write_config(config)
 
     request.app.state.indexer.reload_config()
-    
+
     def _scan():
-        return request.app.state.indexer.scan_all()
-        
+        with request.app.state.sync_lock:
+            try:
+                request.app.state.is_syncing = True
+                return request.app.state.indexer.scan_all()
+            finally:
+                request.app.state.is_syncing = False
+
     docs, chunks = await asyncio.to_thread(_scan)
     request.app.state.dashboard.update_stats(documents=docs, chunks=chunks)
-    
+
     if hasattr(request.app.state, 'watchdog_observer') and request.app.state.watchdog_observer:
         request.app.state.watchdog_observer.stop()
         request.app.state.watchdog_observer.join()
@@ -438,6 +457,7 @@ async def graphify_god_nodes(request: Request):
         return {"error": str(e)}
 
 @app.get("/api/activity")
+
 def get_activity(request: Request):
     activity_file = os.path.join(BASE_DIR, "system-graph", request.app.state.indexer.active_space, "activity.json")
     if not os.path.exists(activity_file):
@@ -454,8 +474,6 @@ def get_activity(request: Request):
             return data
     except Exception:
         return {"type": None, "nodes": []}
-
-from fastapi import FastAPI, HTTPException, BackgroundTasks
 
 
 @app.post("/api/refresh")
@@ -559,26 +577,32 @@ async def memory_add(request: Request, body: MemoryIn):
         tags=body.tags,
         importance=body.importance,
         session=body.session,
+        space=request.app.state.indexer.active_space,
     )
     return {"ok": True, "memory": mem}
 
 
-@app.get("/memory/recall", summary="Busca recuerdos relevantes (sin session=busca en todo)")
-async def memory_recall(request: Request, q: str, top_k: int = 5, type: Optional[str] = None, session: Optional[str] = None):
+@app.get("/memory/recall", summary="Busca recuerdos relevantes (sin session=busca en todo; space=* busca en todos los workspaces)")
+async def memory_recall(request: Request, q: str, top_k: int = 5, type: Optional[str] = None, session: Optional[str] = None, space: Optional[str] = None):
     if not request.app.state.memory_store:
         raise HTTPException(503, "Memory store no inicializado")
+    # Por defecto, solo recuerdos del workspace activo (evita que un recuerdo
+    # guardado en otro space "se filtre" al contexto de este). space="*" para
+    # buscar explícitamente en todos los workspaces.
+    effective_space = None if space == "*" else (space or request.app.state.indexer.active_space)
     results = await asyncio.to_thread(
-        request.app.state.memory_store.recall, query=q, top_k=top_k, type_filter=type, session=session
+        request.app.state.memory_store.recall, query=q, top_k=top_k, type_filter=type, session=session, space=effective_space
     )
     return {"results": results, "count": len(results)}
 
 
-@app.get("/memory", summary="Lista recuerdos (filtra por sesión opcional)")
-async def memory_list(request: Request, limit: int = 50, type: Optional[str] = None, session: Optional[str] = None):
+@app.get("/memory", summary="Lista recuerdos (filtra por sesión/space opcional; space=* lista todos los workspaces)")
+async def memory_list(request: Request, limit: int = 50, type: Optional[str] = None, session: Optional[str] = None, space: Optional[str] = None):
     if not request.app.state.memory_store:
         raise HTTPException(503, "Memory store no inicializado")
+    effective_space = None if space == "*" else (space or request.app.state.indexer.active_space)
     mems = await asyncio.to_thread(
-        request.app.state.memory_store.list_all, limit=limit, type_filter=type, session=session
+        request.app.state.memory_store.list_all, limit=limit, type_filter=type, session=session, space=effective_space
     )
     return {"memories": mems}
 

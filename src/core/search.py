@@ -28,16 +28,21 @@ def hybrid_search(indexer, q: str, n: int = 5, min_score: float = MIN_RESULT_SCO
         if not fts_query:
             fts_query = f'"{safe_q.strip()}"'
 
-        cursor = indexer.conn.cursor()
         table = f"omnia_search_{indexer.safe_space}"
-        cursor.execute(f'''
-            SELECT id, source, symbol, content
-            FROM {table}
-            WHERE {table} MATCH ?
-            ORDER BY rank
-            LIMIT ?
-        ''', (fts_query, n * 2))
-        fts_results = cursor.fetchall()
+        # indexer.conn se comparte con los threads de escritura (index_file,
+        # remove_file), que sí toman db_lock. Sin este lock, una lectura
+        # concurrente con una escritura puede pisarse (misma conexión SQLite
+        # usada desde varios threads con check_same_thread=False).
+        with indexer.db_lock:
+            cursor = indexer.conn.cursor()
+            cursor.execute(f'''
+                SELECT id, source, symbol, content
+                FROM {table}
+                WHERE {table} MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            ''', (fts_query, n * 2))
+            fts_results = cursor.fetchall()
     except Exception as e:
         logging.error(f"FTS5 Error: {e}")
 
