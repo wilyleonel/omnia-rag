@@ -60,24 +60,33 @@ git clone https://github.com/wilyleonel/omnia-rag.git
 cd omnia-rag
 
 # 1. Instalar dependencias del motor RAG (Python)
+# NOTA IMPORTANTE SOBRE VERSIONES: El proyecto usa versiones específicas (ChromaDB 1.5.9+, 
+# Sentence-Transformers 6.0.0+, Numpy 2.0.0+) para asegurar compatibilidad con Python 3.14+
 pip install -r requirements.txt
 
 # 2. Instalar dependencias del Servidor MCP (Node.js)
 cd mcp-server
 npm install
 cd ..
+
+# 3. (Opcional pero Recomendado) Crear comando global
+# Añade este alias a tu terminal para escanear desde cualquier carpeta
+echo "alias omnia-scanner='python3 $(pwd)/src/core/server.py'" >> ~/.zshrc
+source ~/.zshrc
 ```
 
+### 2. Ejecutar y Escanear (El Nuevo Comando Mágico ✨)
+Ya no necesitas editar `omnia.yaml` manualmente para configurar rutas. Gracias al alias, puedes pararte en **cualquier proyecto** y arrancar el servidor directamente allí:
 
-### 2. Configuración
-Copia o edita el archivo `omnia.yaml` para añadir las rutas a tu código y notas (Soporta múltiples repositorios).
-
-### 3. Ejecutar
-Arranca el sistema:
 ```bash
-python3 src/core/server.py
+# 1. Entra a la carpeta de tu proyecto
+cd /Users/willy/Documents/MiProyectoWeb
+
+# 2. Ejecuta el comando (escanea la carpeta actual automáticamente)
+omnia-scanner
 ```
-*(El servidor indexará tu código automáticamente, abrirá el Dashboard y se quedará escuchando cambios).*
+
+*(El servidor detectará tu ubicación, actualizará su configuración por detrás, indexará tu código, y se quedará escuchando cambios en segundo plano).*
 
 ---
 

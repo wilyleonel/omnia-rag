@@ -11,18 +11,6 @@ spaces:
       - venv
       - __pycache__
       - .next
-      - charting_library
-      - vendor
-      - public
-      exclude_files:
-      - package-lock.json
-      - yarn.lock
-      - pnpm-lock.yaml
-      - '*.postman_collection.json'
-      - '*postman*.json'
-      - '*/locales/*'
-      - '*.min.js'
-      - '*.d.ts'
       extensions:
       - .ts
       - .tsx
@@ -30,4 +18,4 @@ spaces:
       - .json
       - .js
       - .py
-      path: /Users/leo/Desktop/copia de seguridad/wb test/
+      path: /Users/willy/Desktop/leo/Omnia-RAG

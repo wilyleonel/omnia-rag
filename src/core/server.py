@@ -695,6 +695,37 @@ async def session_prune(request: Request, days: int = 30):
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Omnia-RAG Backend")
+    parser.add_argument("--path", type=str, default=".", help="Ruta del proyecto a indexar (ej. '.')")
+    args = parser.parse_args()
+
+    if args.path:
+        abs_path = os.path.abspath(args.path)
+        print(f"➜ Configurando Omnia-RAG para indexar: {abs_path}")
+        config = read_config()
+        active = config.get("active_space", "default")
+        if "spaces" not in config:
+            config["spaces"] = {active: {"directories": []}}
+        if active not in config["spaces"]:
+            config["spaces"][active] = {"directories": []}
+            
+        dirs = config["spaces"][active].get("directories", [])
+        new_dir = {
+            "path": abs_path,
+            "extensions": [".ts", ".tsx", ".md", ".json", ".js", ".py"],
+            "exclude": ["node_modules", "dist", "build", ".git", ".claude", "venv", "__pycache__", ".next"]
+        }
+        
+        # Sobrescribimos el primer directorio para que sea el principal
+        if dirs:
+            dirs[0] = new_dir
+        else:
+            dirs.append(new_dir)
+            
+        config["spaces"][active]["directories"] = dirs
+        write_config(config)
+
     print("Iniciando Omnia-RAG Backend en http://localhost:8000 ...")
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info", access_log=False)
