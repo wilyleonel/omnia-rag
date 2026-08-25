@@ -81,3 +81,4 @@ python3 src/core/server.py
 python src/core/visualizer.py
 ```
 Abre el archivo `espacio_vectorial.html` generado y navega por tu arquitectura.
+# omnia-rag
