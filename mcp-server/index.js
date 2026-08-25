@@ -74,6 +74,59 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {},
         },
       },
+      {
+        name: "omnia_memory_save",
+        description: "Guarda un recuerdo explícito en la memoria episódica de Omnia-RAG (decisiones, reglas, contexto durable). Usalo cuando el usuario confirme o corrija algo que deba persistir entre sesiones, sin depender del hook automático.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            content: {
+              type: "string",
+              description: "El contenido del recuerdo a guardar.",
+            },
+            type: {
+              type: "string",
+              description: "Tipo de recuerdo: rule | pattern | insight | decision | context. Default: insight.",
+            },
+            tags: {
+              type: "array",
+              items: { type: "string" },
+              description: "Etiquetas opcionales para categorizar el recuerdo.",
+            },
+            importance: {
+              type: "number",
+              description: "1.0 normal, 2.0 importante, 5.0 crítico. Default: 1.0.",
+            },
+            session: {
+              type: "string",
+              description: "Sesión a la que pertenece el recuerdo. Default: global.",
+            },
+          },
+          required: ["content"],
+        },
+      },
+      {
+        name: "omnia_memory_recall",
+        description: "Busca recuerdos relevantes guardados previamente en la memoria episódica de Omnia-RAG. Usalo para recordar contexto/preferencias/decisiones sin esperar a que el hook automático lo dispare.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "La consulta para buscar recuerdos relevantes.",
+            },
+            top_k: {
+              type: "number",
+              description: "Cantidad máxima de recuerdos a devolver. Default: 5.",
+            },
+            session: {
+              type: "string",
+              description: "Filtrar por sesión específica. Sin especificar, busca en todas.",
+            },
+          },
+          required: ["query"],
+        },
+      },
     ],
   };
 });
@@ -161,6 +214,102 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: data.output || data.error }] };
     } catch (e) {
       return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  } else if (request.params.name === "omnia_memory_save") {
+    try {
+      const baseUrl = process.env.OMNIA_API_URL || "http://127.0.0.1:8000";
+      const args = request.params.arguments;
+      const body = {
+        content: args.content,
+        type: args.type || "insight",
+        tags: args.tags || [],
+        importance: args.importance ?? 1.0,
+        session: args.session || "global",
+      };
+      const res = await fetch(`${baseUrl}/memory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Error del servidor: ${res.status}`);
+      }
+
+      const data = await res.json();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Recuerdo guardado en Omnia-RAG (sesión: ${body.session}, tipo: ${body.type}).\n${JSON.stringify(data)}`,
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error conectando con Omnia-RAG. Asegúrate de que el servidor esté corriendo. Detalles: ${e.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  } else if (request.params.name === "omnia_memory_recall") {
+    try {
+      const baseUrl = process.env.OMNIA_API_URL || "http://127.0.0.1:8000";
+      const args = request.params.arguments;
+      const params = new URLSearchParams();
+      params.set("q", args.query);
+      params.set("top_k", String(args.top_k || 5));
+      if (args.session) params.set("session", args.session);
+
+      const res = await fetch(`${baseUrl}/memory/recall?${params.toString()}`);
+
+      if (!res.ok) {
+        throw new Error(`Error del servidor: ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      if (!data.results || data.results.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No se encontraron recuerdos en Omnia-RAG para: "${args.query}"`,
+            },
+          ],
+        };
+      }
+
+      let resultText = `=== Recuerdos Omnia-RAG para "${args.query}" ===\n\n`;
+
+      data.results.forEach((r, i) => {
+        resultText += `[Recuerdo ${i + 1}] (tipo: ${r.type || "?"}, sesión: ${r.session || "?"}, importancia: ${r.importance ?? "?"})\n`;
+        resultText += `${r.content}\n`;
+        resultText += `----------------------------------------\n\n`;
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: resultText,
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error conectando con Omnia-RAG. Asegúrate de que el servidor esté corriendo. Detalles: ${e.message}`,
+          },
+        ],
+        isError: true,
+      };
     }
   }
 

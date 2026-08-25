@@ -53,14 +53,20 @@ Omnia-RAG/
 ## 🚀 Cómo Empezar
 
 ### 1. Instalación
-Clona el repositorio e instala las dependencias:
-```bash
-git clone https://github.com/tu-usuario/Omnia-RAG.git
-cd Omnia-RAG
-pip install -r requirements.txt
-```
+Clona el repositorio e instala las dependencias del motor RAG en Python y del servidor MCP en Node.js:
 
-### python3 src/core/server.py
+```bash
+git clone https://github.com/wilyleonel/omnia-rag.git
+cd omnia-rag
+
+# 1. Instalar dependencias del motor RAG (Python)
+pip install -r requirements.txt
+
+# 2. Instalar dependencias del Servidor MCP (Node.js)
+cd mcp-server
+npm install
+cd ..
+```
 
 
 ### 2. Configuración
