@@ -5,7 +5,7 @@ import chromadb
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 DB_DIR = os.path.join(BASE_DIR, "data", "chroma_db")
 
-def generate_graph_data(collection=None, limit=1200, microservice=None):
+def generate_graph_data(collection=None, limit=500, microservice=None):
     if collection is None:
         return {"nodes": [], "links": []}
         

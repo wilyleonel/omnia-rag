@@ -2,6 +2,8 @@
 data/
 
 # Dependencias
+.venv/
+venv/
 node_modules/
 __pycache__/
 *.pyc
