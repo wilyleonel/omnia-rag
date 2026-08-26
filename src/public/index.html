@@ -100,7 +100,7 @@
             gap: 8px;
         }
 
-        input {
+        input[type="text"] {
             flex: 1;
             background: rgba(0, 0, 0, 0.3);
             border: 1px solid rgba(255, 255, 255, 0.1);
@@ -111,11 +111,16 @@
             font-family: inherit;
             outline: none;
             transition: border-color 0.2s, background 0.2s;
+            box-sizing: border-box;
         }
 
-        input:focus {
+        input[type="text"]:focus {
             border-color: #6366f1;
             background: rgba(0, 0, 0, 0.5);
+        }
+        
+        input[type="range"] {
+            box-sizing: border-box;
         }
 
         .btn-add, .btn-refresh {
@@ -225,7 +230,11 @@
     <div id="graph-3d"></div>
 
     <div id="ui-panel">
-        
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: -6px;">
+            <span style="font-weight: 600; color: #e0e0e0; font-size: 14px;">🛠️ Control</span>
+            <button onclick="togglePanel()" id="toggle-btn" style="background: none; border: none; color: #818cf8; cursor: pointer; font-size: 18px; padding: 0;">−</button>
+        </div>
+        <div id="ui-panel-content" style="display: flex; flex-direction: column; gap: 16px;">
         <div class="input-group" style="align-items: center; margin-bottom: 5px;">
             <select id="space-selector" onchange="changeSpace()" style="flex:1; background: rgba(0,0,0,0.5); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); padding: 10px; border-radius: 8px; outline: none; font-family: inherit; font-weight: bold; cursor: pointer;">
                 <option value="default">default</option>
@@ -263,6 +272,7 @@
 
         <button class="btn-refresh" onclick="refreshGraph()">↻ Recargar Galaxia</button>
         <button class="btn-refresh" style="margin-top: -5px;" onclick="syncMemory()">⚡ Sincronizar Memoria</button>
+        </div>
     </div>
 
     <div id="debug-hud" style="position:absolute;bottom:10px;right:10px;max-width:560px;max-height:40vh;overflow:auto;z-index:50;font:12px/1.5 ui-monospace,monospace;color:#7CFC00;background:rgba(0,0,0,0.8);padding:10px 14px;border:1px solid #234;border-radius:8px;white-space:pre-wrap;"></div>
@@ -286,6 +296,18 @@
 
         let Graph;
         let hoverNode = null;
+
+        function togglePanel() {
+            const content = document.getElementById('ui-panel-content');
+            const btn = document.getElementById('toggle-btn');
+            if (content.style.display === 'none') {
+                content.style.display = 'flex';
+                btn.innerText = '−';
+            } else {
+                content.style.display = 'none';
+                btn.innerText = '+';
+            }
+        }
 
         async function fetchSpaces() {
             try {
@@ -620,10 +642,6 @@
                         .nodeResolution(8) // Baja resolución poligonal para mejor rendimiento
                         .linkResolution(3)
                         .backgroundColor('#000000')
-                        // OPTIMIZACIÓN EXTREMA DE FÍSICAS:
-                        // Detenemos los cálculos matemáticos rápidamente para que no queme la CPU
-                        .warmupTicks(100)
-                        .cooldownTicks(50)
                         .nodeVisibility(node => {
                             // Modo Enfoque: Si hay un nodo buscado, ocultar el resto de la galaxia
                             if (hoverNode) {
@@ -716,43 +734,11 @@
                     try { Graph.scene().fog = new THREE.FogExp2('#000000', 0.0004); } catch (e) {}
                 }
 
-                // ── Render PROGRESIVO ──────────────────────────────────────
-                // No volcamos toda la galaxia de golpe: con cientos/miles de
-                // nodos, un unico graphData() congela el navegador y la escena
-                // "no aparece". Revelamos por lotes (los mas conectados primero)
-                // dejando respirar al hilo de UI entre cada tanda.
-                const RENDER_BATCH = 120;
-                const orderedNodes = gData.nodes.slice().sort((a, b) =>
-                    (nodeNeighbors.get(b.id)?.size || 0) - (nodeNeighbors.get(a.id)?.size || 0)
-                );
-
-                function renderBatch(count) {
-                    const shown = orderedNodes.slice(0, count);
-                    const shownIds = new Set(shown.map(n => n.id));
-                    const links = gData.links.filter(l => {
-                        const s = l.source.id || l.source;
-                        const t = l.target.id || l.target;
-                        return shownIds.has(s) && shownIds.has(t);
-                    });
-                    Graph.graphData({ nodes: shown, links });
-
-                    if (count < orderedNodes.length) {
-                        showLoading(`Renderizando galaxia... ${count}/${orderedNodes.length}`);
-                        setTimeout(() => renderBatch(Math.min(count + RENDER_BATCH, orderedNodes.length)), 150);
-                    } else {
-                        hideLoading();
-                        // Encuadrar: sin esto la camara puede quedar fuera de la nube de nodos
-                        setTimeout(() => { try { Graph.zoomToFit(800, 120); } catch (e) {} }, 600);
-                    }
-                }
-
-                if (orderedNodes.length <= RENDER_BATCH) {
-                    Graph.graphData(gData);
-                    hideLoading();
-                    setTimeout(() => { try { Graph.zoomToFit(800, 120); } catch (e) {} }, 600);
-                } else {
-                    renderBatch(RENDER_BATCH);
-                }
+                Graph.graphData(gData);
+                hideLoading();
+                
+                // Encuadrar la galaxia después de que la física inicial se expanda
+                setTimeout(() => { try { Graph.zoomToFit(800, 120); } catch (e) {} }, 1000);
 
             } catch (e) { hud("❌ Graph Error: " + (e && e.message ? e.message : e)); hideLoading(); }
         }
