@@ -97,3 +97,4 @@ python src/core/visualizer.py
 ```
 Abre el archivo `espacio_vectorial.html` generado y navega por tu arquitectura.
 # omnia-rag
+<img width="1504" height="779" alt="image" src="https://github.com/user-attachments/assets/3bbde4e7-b496-4054-b93e-56a4cc1eaf28" />
