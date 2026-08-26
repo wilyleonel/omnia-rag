@@ -21,6 +21,10 @@ QUERIES = {
         (class_declaration name: (identifier) @name) @def
         (function_declaration name: (identifier) @name) @def
         (method_definition name: (property_identifier) @name) @def
+        (lexical_declaration (variable_declarator name: (identifier) @name value: (arrow_function))) @def
+        (lexical_declaration (variable_declarator name: (identifier) @name value: (function_expression))) @def
+        (variable_declaration (variable_declarator name: (identifier) @name value: (arrow_function))) @def
+        (variable_declaration (variable_declarator name: (identifier) @name value: (function_expression))) @def
     """,
     ".ts": """
         (class_declaration name: (type_identifier) @name) @def
@@ -28,6 +32,10 @@ QUERIES = {
         (method_definition name: (property_identifier) @name) @def
         (interface_declaration name: (type_identifier) @name) @def
         (type_alias_declaration name: (type_identifier) @name) @def
+        (lexical_declaration (variable_declarator name: (identifier) @name value: (arrow_function))) @def
+        (lexical_declaration (variable_declarator name: (identifier) @name value: (function_expression))) @def
+        (variable_declaration (variable_declarator name: (identifier) @name value: (arrow_function))) @def
+        (variable_declaration (variable_declarator name: (identifier) @name value: (function_expression))) @def
     """,
     ".py": """
         (class_definition name: (identifier) @name) @def

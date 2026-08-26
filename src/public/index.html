@@ -15,6 +15,19 @@
             color: #e0e0e0;
         }
 
+        #empty-state {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 1.2rem;
+            display: none;
+            pointer-events: none;
+        }
+
         #graph-3d {
             position: absolute;
             top: 0;
@@ -135,17 +148,22 @@
 
         #loading-overlay {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.8);
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: auto;
+            height: auto;
+            padding: 12px 24px;
+            border-radius: 30px;
+            background: rgba(10, 10, 10, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
             z-index: 30;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            font-size: 1.5rem;
-            color: #818cf8;
+            display: none;
+            color: #fff;
+            font-size: 14px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            pointer-events: none;
         }
 
         #claude-banner {
@@ -175,15 +193,36 @@
             100% { box-shadow: 0 0 20px rgba(192, 132, 252, 0.3); }
         }
     </style>
-    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-    <script src="https://unpkg.com/3d-force-graph"></script>
+    <!-- Capturador temprano: registra errores de carga/ejecución de los scripts
+         de abajo, que ocurren antes de que corra el <script> del <body>. -->
+    <script>
+        window.__omniaErr = [];
+        window.addEventListener('error', function (e) {
+            if (e && e.target && (e.target.src || e.target.href)) {
+                window.__omniaErr.push("no cargó recurso: " + (e.target.src || e.target.href).split('/').pop());
+            } else {
+                window.__omniaErr.push((e.message || e) + " @" + String(e.filename || '').split('/').pop() + ":" + e.lineno);
+            }
+        }, true);
+    </script>
+    <!-- Servidos localmente: unpkg (CDN externo) queda bloqueado por Brave Shields
+         y otros bloqueadores, dejando ForceGraph3D/THREE undefined y la galaxia negra. -->
+    <script src="/public/vendor/three.min.js"></script>
+    <script src="/public/vendor/3d-force-graph.min.js"></script>
+    <script>
+        // Estado inmediato tras cargar los vendors (aún en <head>).
+        window.__fgStatus = "THREE=" + (typeof THREE) + " ForceGraph3D=" + (typeof ForceGraph3D);
+    </script>
 </head>
 
 <body>
-
-    <div id="loading-overlay">Cargando Galaxia...</div>
-
-    <div id="claude-banner"></div>
+    <div id="loading-overlay">Conectando Neuronas...</div>
+    <div id="empty-state">
+        <h2 style="margin:0; font-weight: 300;">Espacio Vacío</h2>
+        <p style="font-size: 14px; margin-top: 10px;">Añade una carpeta para comenzar a visualizar su código.</p>
+    </div>
+    
+    <div id="graph-3d"></div>
 
     <div id="ui-panel">
         
@@ -199,6 +238,14 @@
         <select id="ms-filter" style="width:100%;margin-bottom:10px;padding:6px;background:#111;color:#c7d2fe;border:1px solid #312e81;border-radius:6px;font-size:12px;">
             <option value="">Todos (podado)</option>
         </select>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;color:#c7d2fe;margin-bottom:4px;">
+            <span>🪐 Nodos a mostrar</span>
+            <span id="limit-value" style="font-weight:600;color:#818cf8;">1200</span>
+        </div>
+        <input type="range" id="limit-slider" min="50" max="5000" step="50" value="1200"
+               style="width:100%;margin-bottom:10px;accent-color:#6366f1;cursor:pointer;">
+
         <div id="workspaces-list">
             <!-- Rendered dynamically -->
         </div>
@@ -218,9 +265,25 @@
         <button class="btn-refresh" style="margin-top: -5px;" onclick="syncMemory()">⚡ Sincronizar Memoria</button>
     </div>
 
-    <div id="graph-3d"></div>
+    <div id="debug-hud" style="position:absolute;bottom:10px;right:10px;max-width:560px;max-height:40vh;overflow:auto;z-index:50;font:12px/1.5 ui-monospace,monospace;color:#7CFC00;background:rgba(0,0,0,0.8);padding:10px 14px;border:1px solid #234;border-radius:8px;white-space:pre-wrap;"></div>
 
     <script>
+        // ── HUD de diagnóstico: vuelca estado y errores JS a la pantalla,
+        //    para no depender de abrir la consola del navegador. ──
+        const HUD = document.getElementById('debug-hud');
+        function hud(msg) { if (HUD) HUD.textContent += msg + "\n"; try { console.log(msg); } catch (e) {} }
+        window.onerror = function (m, src, line, col) {
+            hud("❌ " + m + "  @" + String(src || "").split('/').pop() + ":" + line + ":" + col);
+        };
+        window.addEventListener('unhandledrejection', function (e) {
+            hud("❌ promesa: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+        });
+        hud("estado head: " + (window.__fgStatus || "?"));
+        (window.__omniaErr || []).forEach(function (msg) { hud("❌ carga: " + msg); });
+        hud("THREE cargado: " + (typeof THREE !== 'undefined' ? "SÍ" : "NO ❌"));
+        hud("ForceGraph3D cargado: " + (typeof ForceGraph3D !== 'undefined' ? "SÍ" : "NO ❌"));
+        try { hud("WebGL: " + (!!document.createElement('canvas').getContext('webgl') ? "SÍ" : "NO ❌")); } catch (e) { hud("WebGL: error " + e.message); }
+
         let Graph;
         let hoverNode = null;
 
@@ -348,6 +411,9 @@
                 
                 if (data.status === "syncing") {
                     showLoading(`Sincronizando... ${data.documents_indexed} fragmentos guardados`);
+                    if (!syncInterval) {
+                        syncInterval = setInterval(checkStatus, 2000);
+                    }
                 } else if (syncInterval) {
                     clearInterval(syncInterval);
                     syncInterval = null;
@@ -451,6 +517,8 @@
                     const data = JSON.parse(event.data);
                     if (data.type === 'activity_update') {
                         pollActivity(); 
+                    } else if (data.type === 'progress') {
+                        showLoading(data.text);
                     }
                 } catch(e) {}
             };
@@ -462,6 +530,24 @@
         connectWebSocket();
         let GRAPH_LIMIT = 1200;
         let GRAPH_MS = '';
+
+        // Control de cantidad de nodos desde el front. El backend ya poda por
+        // conectividad (los mas enlazados primero), asi que subir/bajar este
+        // valor amplia o recorta la galaxia sin reindexar nada.
+        (function initLimitSlider() {
+            const slider = document.getElementById('limit-slider');
+            const label = document.getElementById('limit-value');
+            if (!slider) return;
+            let debounce = null;
+            slider.addEventListener('input', () => {
+                label.innerText = slider.value;          // feedback inmediato al arrastrar
+            });
+            slider.addEventListener('change', () => {    // recien al soltar, recarga
+                GRAPH_LIMIT = parseInt(slider.value, 10);
+                clearTimeout(debounce);
+                debounce = setTimeout(refreshGraph, 100);
+            });
+        })();
 
         async function fetchMicroservices() {
             try {
@@ -482,7 +568,13 @@
                 if (GRAPH_MS) params.set('ms', GRAPH_MS);
                 const res = await fetch('/api/graph?' + params);
                 const gData = await res.json();
-                console.log(`Grafo: ${gData.nodes.length} nodos / ${gData.links.length} enlaces`);
+                hud(`Grafo recibido: ${gData.nodes.length} nodos / ${gData.links.length} enlaces`);
+
+                if (gData.nodes.length === 0) {
+                    document.getElementById('empty-state').style.display = 'block';
+                } else {
+                    document.getElementById('empty-state').style.display = 'none';
+                }
 
                 let workspaces = [];
                 try {
@@ -619,20 +711,57 @@
                                 .linkDirectionalParticleWidth(Graph.linkDirectionalParticleWidth());
                         });
 
-                    Graph.scene().fog = new THREE.FogExp2('#000000', 0.0004);
+                    // El build UMD de three (r160+) solo expone THREE como stub;
+                    // si FogExp2 no existe no debe abortar el render del grafo.
+                    try { Graph.scene().fog = new THREE.FogExp2('#000000', 0.0004); } catch (e) {}
                 }
 
-                Graph.graphData(gData);
-                // Encuadrar: sin esto la camara puede quedar fuera de la nube de nodos
-                setTimeout(() => { try { Graph.zoomToFit(800, 120); } catch (e) {} }, 900);
-            } catch (e) { console.error("Graph Error:", e); }
-            hideLoading();
+                // ── Render PROGRESIVO ──────────────────────────────────────
+                // No volcamos toda la galaxia de golpe: con cientos/miles de
+                // nodos, un unico graphData() congela el navegador y la escena
+                // "no aparece". Revelamos por lotes (los mas conectados primero)
+                // dejando respirar al hilo de UI entre cada tanda.
+                const RENDER_BATCH = 120;
+                const orderedNodes = gData.nodes.slice().sort((a, b) =>
+                    (nodeNeighbors.get(b.id)?.size || 0) - (nodeNeighbors.get(a.id)?.size || 0)
+                );
+
+                function renderBatch(count) {
+                    const shown = orderedNodes.slice(0, count);
+                    const shownIds = new Set(shown.map(n => n.id));
+                    const links = gData.links.filter(l => {
+                        const s = l.source.id || l.source;
+                        const t = l.target.id || l.target;
+                        return shownIds.has(s) && shownIds.has(t);
+                    });
+                    Graph.graphData({ nodes: shown, links });
+
+                    if (count < orderedNodes.length) {
+                        showLoading(`Renderizando galaxia... ${count}/${orderedNodes.length}`);
+                        setTimeout(() => renderBatch(Math.min(count + RENDER_BATCH, orderedNodes.length)), 150);
+                    } else {
+                        hideLoading();
+                        // Encuadrar: sin esto la camara puede quedar fuera de la nube de nodos
+                        setTimeout(() => { try { Graph.zoomToFit(800, 120); } catch (e) {} }, 600);
+                    }
+                }
+
+                if (orderedNodes.length <= RENDER_BATCH) {
+                    Graph.graphData(gData);
+                    hideLoading();
+                    setTimeout(() => { try { Graph.zoomToFit(800, 120); } catch (e) {} }, 600);
+                } else {
+                    renderBatch(RENDER_BATCH);
+                }
+
+            } catch (e) { hud("❌ Graph Error: " + (e && e.message ? e.message : e)); hideLoading(); }
         }
 
         // Init
         fetchSpaces();
         fetchWorkspaces();
         fetchMicroservices();
+        checkStatus();
         refreshGraph();
 
     </script>

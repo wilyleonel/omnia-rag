@@ -193,6 +193,30 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+class ProgressBroadcaster:
+    def __init__(self, original_stderr, ws_manager):
+        self.original_stderr = original_stderr
+        self.manager = ws_manager
+        
+    def write(self, buf):
+        self.original_stderr.write(buf)
+        # Limpiamos el texto porque tqdm envía caracteres de retorno de carro (\r)
+        clean_buf = buf.strip()
+        if clean_buf and ("Batches:" in clean_buf or "it/s" in clean_buf or "Graphify:" in clean_buf):
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.manager.broadcast({"type": "progress", "text": clean_buf}))
+            except Exception:
+                pass
+                
+    def flush(self):
+        self.original_stderr.flush()
+
+import sys
+sys.stderr = ProgressBroadcaster(sys.stderr, manager)
+
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -210,7 +234,10 @@ def read_root():
     # If index.html exists, serve it. Otherwise return a basic message.
     idx_path = os.path.join(PUBLIC_DIR, "index.html")
     if os.path.exists(idx_path):
-        return FileResponse(idx_path)
+        # no-cache: el dashboard es un archivo que editamos seguido; sin esto
+        # el navegador sirve el HTML/JS viejo desde caché (ETag heurístico) y
+        # los cambios "no aparecen" hasta un hard-refresh manual.
+        return FileResponse(idx_path, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return {"message": "index.html not found in public directory."}
 
 @app.get("/api/graph")
@@ -299,18 +326,33 @@ def get_workspaces(request: Request):
 @app.get("/api/select-folder")
 async def select_folder():
     def get_folder():
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        # Bring window to front
-        try:
-            root.attributes('-topmost', True)
-        except Exception:
-            pass
-        folder = filedialog.askdirectory(title="Selecciona la carpeta del proyecto para añadir a Omnia-RAG")
-        root.destroy()
-        return folder
+        import subprocess
+        import sys
+        if sys.platform == 'darwin':
+            # Use AppleScript on macOS to avoid Tkinter main thread crashes and force it to front
+            script = '''tell application "SystemUIServer"
+                activate
+                set myFolder to choose folder with prompt "Selecciona la carpeta del proyecto para añadir a Omnia-RAG"
+                return POSIX path of myFolder
+            end tell'''
+            try:
+                result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, check=True)
+                return result.stdout.strip()
+            except subprocess.CalledProcessError:
+                return None
+        else:
+            # Fallback for Windows/Linux (though might still crash if not main thread depending on OS)
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                root.attributes('-topmost', True)
+            except Exception:
+                pass
+            folder = filedialog.askdirectory(title="Selecciona la carpeta")
+            root.destroy()
+            return folder
 
     try:
         folder_path = await asyncio.to_thread(get_folder)
@@ -697,7 +739,7 @@ async def session_prune(request: Request, days: int = 30):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Omnia-RAG Backend")
-    parser.add_argument("--path", type=str, default=".", help="Ruta del proyecto a indexar (ej. '.')")
+    parser.add_argument("--path", type=str, default=None, help="Ruta del proyecto a indexar. Si se omite, no se añade ruta nueva.")
     args = parser.parse_args()
 
     if args.path:

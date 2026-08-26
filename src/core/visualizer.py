@@ -3,7 +3,7 @@ import json
 import chromadb
 # Configuración básica
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-DB_DIR = os.path.join(BASE_DIR, "chroma_db")
+DB_DIR = os.path.join(BASE_DIR, "data", "chroma_db")
 
 def generate_graph_data(collection=None, limit=1200, microservice=None):
     if collection is None:
@@ -136,7 +136,11 @@ def generate_graph_data(collection=None, limit=1200, microservice=None):
                         })
                         existing_links.add(link_key)
 
-    # 3. Poda: renderizar solo lo necesario.
+    # 3. Limpiar enlaces rotos (nodos que fueron ignorados como DTOs)
+    kept = {n["id"] for n in nodes}
+    links = [l for l in links if l["source"] in kept and l["target"] in kept]
+
+    # 4. Poda: renderizar solo lo necesario.
     # Con miles de nodos el layout no converge y la escena queda ilegible,
     # asi que nos quedamos con los mas conectados (los que explican la arquitectura).
     if limit and len(nodes) > limit:
